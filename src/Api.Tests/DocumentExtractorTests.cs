@@ -61,6 +61,50 @@ public class DocumentExtractorTests
     }
 
     [Fact]
+    public async Task Max_tokens_is_NeedsReview_without_retry_even_if_the_json_looks_valid()
+    {
+        var fake = new FakeClaude(FakeClaude.Text(GoodMc, "max_tokens"), FakeClaude.Text(GoodMc));
+        var r = await new DocumentExtractor(fake, Opts).ExtractAsync(Pdf);
+        Assert.Equal(DocumentStatus.NeedsReview, r.Status);
+        Assert.Single(fake.Requests);
+        Assert.Contains(r.Problems, p => p.Contains("max_tokens"));
+    }
+
+    [Fact]
+    public async Task Retry_sends_the_exact_problems_and_says_keep_wrong_documents_as_written()
+    {
+        var fake = new FakeClaude(FakeClaude.Text(BadMc), FakeClaude.Text(GoodMc));
+        await new DocumentExtractor(fake, Opts).ExtractAsync(Pdf);
+
+        var retry = fake.Requests[1];
+        Assert.Equal("assistant", FakeClaude.MessageJson(retry, 1).GetProperty("role").GetString());
+        var ask = FakeClaude.MessageJson(retry, 2).GetRawText();
+        Assert.Contains("days is 3 but the date range is 2 days", ask);
+        Assert.Contains("correct only reading mistakes", ask);
+        Assert.Contains("keep its values as written", ask);
+        Assert.NotNull(retry.OutputConfig);
+    }
+
+    [Fact]
+    public async Task Not_json_retries_once_then_NeedsReview_with_a_problem()
+    {
+        var fake = new FakeClaude(FakeClaude.Text("sorry"), FakeClaude.Text("still not json"));
+        var r = await new DocumentExtractor(fake, Opts).ExtractAsync(Pdf);
+        Assert.Equal(2, fake.Requests.Count);
+        Assert.Null(r.Data);
+        Assert.Contains(r.Problems, p => p.Contains("not valid JSON"));
+    }
+
+    [Fact]
+    public async Task Other_document_says_why_it_needs_review()
+    {
+        var fake = new FakeClaude(FakeClaude.Text("""{"kind":"other","medical_certificate":null,"expense_claim":null}"""));
+        var r = await new DocumentExtractor(fake, Opts).ExtractAsync(Pdf);
+        Assert.Equal(1, r.Attempts);
+        Assert.Contains(r.Problems, p => p.Contains("not a medical certificate"));
+    }
+
+    [Fact]
     public async Task Valid_claim_passes()
     {
         var r = await new DocumentExtractor(new FakeClaude(FakeClaude.Text(GoodClaim)), Opts).ExtractAsync(Pdf);
